@@ -1,0 +1,12 @@
+{
+    "display_name": "并行备选回复 (Parallel Swipes)",
+    "loading_order": 20,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "ScrenSixerv",
+    "version": "1.0.0",
+    "homePage": "https://github.com/ScrenSixerv/SillyTavern-ParallelSwipes",
+    "auto_update": true
+}

@@ -1,0 +1,44 @@
+#pswipe_bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    margin: 0 0 4px 0;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background-color: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
+}
+
+#pswipe_bar .pswipe_text {
+    flex: 1;
+}
+
+#pswipe_bar .pswipe_spinner {
+    opacity: 0.8;
+}
+
+#pswipe_bar .menu_button {
+    margin: 0;
+    padding: 2px 10px;
+    white-space: nowrap;
+}
+
+.pswipe_settings .pswipe_row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+}
+
+.pswipe_settings .pswipe_row input[type="number"] {
+    width: 70px;
+}
+
+.pswipe_settings small {
+    display: block;
+    opacity: 0.8;
+    margin-top: 6px;
+    line-height: 1.5;
+}
