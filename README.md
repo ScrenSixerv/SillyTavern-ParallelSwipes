@@ -1,82 +1,82 @@
-# Parallel Swipes for SillyTavern
+# 并行备选回复 (Parallel Swipes)
 
-Generate several alternative replies (swipes) **at the same time** instead of one after another.
+[English](README.en.md)
 
-Many chat completion providers no longer accept `n > 1` ("Multiple swipes per generation"), so SillyTavern's built-in Multi Swipe fails with errors like `Invalid n value (currently only n = 1 is supported)`. This extension brings that feature back. When SillyTavern sends its reply request, the extension sends N-1 identical copies in parallel. Once SillyTavern's own reply finishes, it adds the other results to the same message as swipes. Switch between them with the left and right arrows as usual.
+一个 SillyTavern（酒馆）扩展：让多条备选回复**同时生成**，而不是一条接一条地等。
 
-Total wait time is roughly the time of the slowest request, not the sum of all of them.
+现在很多聊天补全服务商已经不支持「每次生成多个备选回复」（`n > 1`），酒馆自带的 Multi Swipe 会报 `Invalid n value (currently only n = 1 is supported)` 之类的错。这个扩展把这项功能找了回来：酒馆发出自己那条回复请求时，扩展会用完全相同的请求再并行发出 N-1 条；等酒馆那条生成完，其余结果会作为备选回复（swipe）加到同一条消息上，照常用左右箭头切换。
 
-> The extension's interface (settings panel, menu entry, notifications) is in Simplified Chinese.
+总等待时间大约等于最慢的那一条，而不是几条加起来。
 
-## Features
+## 功能
 
-- **Same context.** Each parallel request uses an exact copy of the request body SillyTavern builds: same prompt, preset, world info, and connection settings.
-- **Native-looking swipes.** Results go through the same cleanup SillyTavern applies to normal replies (stopping strings, regex scripts, whitespace trimming, reasoning parsing), so they look like any other swipe.
-- **Adjustable at any time.** Change the count from the wand menu, the settings panel, or the `/pswipe` slash command.
-- **Progress bar with a stop button.** SillyTavern's own stop button also stops the parallel requests.
-- **Resilient:**
-  - Only SillyTavern's own reply requests are copied. Requests from other extensions or scripts (for example image prompt generators using `generateRaw`) are left alone.
-  - Rate limits (429), gateway errors, and "service too busy" responses are retried once. This can be turned off.
-  - A configurable timeout gives up on any request that stops sending content, so the bar never hangs forever.
-  - If SillyTavern's own reply fails or comes back empty, the first parallel result replaces it instead of leaving a blank swipe.
-  - If you switch chats or delete or change the message while requests are running, the results are discarded rather than written to the wrong place.
-  - While the extension is enabled, the built-in `n` parameter is removed from requests so it can no longer cause `Bad Request` errors.
+- **上下文完全相同**：每条并行请求都是酒馆所构建请求的原样复制，提示词、预设、世界书、连接设置全都一样。
+- **和原生备选一样**：结果会经过酒馆处理普通回复的同一套清理流程（停止词、正则脚本、去空白、思维链解析），看起来和其他备选没有区别。
+- **数量随时可调**：魔杖菜单、扩展设置面板、`/pswipe` 命令都能改。
+- **进度条和停止按钮**：点酒馆自己的停止按钮，也会一起停掉并行请求。
+- **健壮性**：
+  - 只复制酒馆自己的回复请求。其他扩展或脚本发出的请求（比如用 `generateRaw` 写生图提示词的脚本）不受影响。
+  - 遇到限流（429）、网关错误、「服务太忙」会自动重试一次，可以关闭。
+  - 有可调的超时：某条请求一直不出内容就放弃它，进度条不会永远卡在「生成中」。
+  - 酒馆自己那条失败或为空时，用第一条并行结果顶替，不会留下一条空白备选。
+  - 生成途中切换了聊天、删除或改动了消息，结果会直接丢弃，不会写错位置。
+  - 启用期间，酒馆自带的 `n` 参数会从请求里去掉，不会再因为它报 `Bad Request`。
 
-## Requirements
+## 使用条件
 
-- SillyTavern with the **Chat Completion** API. Tested on SillyTavern 1.19.0 with a custom OpenAI-compatible endpoint.
-- A provider that allows several concurrent requests with your key. If it doesn't, extra requests are rejected (see Troubleshooting).
+- 酒馆使用**聊天补全（Chat Completion）**接口。已在 SillyTavern 1.19.0 + 自定义 OpenAI 兼容接口上测试。
+- 服务商允许同一个 Key 同时发多条请求。不允许的话，多出来的请求会被拒绝（见下方「常见问题」）。
 
-## Installation
+## 安装
 
-1. In SillyTavern, open **Extensions** (the stacked-blocks icon) and click **Install extension**.
-2. Paste this repository's URL:
+1. 在酒馆里打开**扩展**面板（叠方块图标），点**安装扩展**。
+2. 粘贴本仓库地址：
    ```
    https://github.com/ScrenSixerv/SillyTavern-ParallelSwipes
    ```
-3. Reload the page. A **并行备选回复** section appears in the extension settings.
+3. 刷新页面，扩展设置里会出现「并行备选回复」一栏。
 
-Manual install: copy this folder into `data/<your-user>/extensions/` (or `public/scripts/extensions/third-party/` for all users) and reload SillyTavern.
+手动安装：把本文件夹复制到 `data/<你的用户名>/extensions/`（或给所有用户装到 `public/scripts/extensions/third-party/`），然后刷新酒馆。
 
-## Usage
+## 使用方法
 
-The count is the **total** number of replies per generation, **including SillyTavern's own**. For example, `3` means SillyTavern's reply plus 2 parallel ones.
+数量是每次生成的**总数**，**包含酒馆自己那条**。例如填 `3` = 酒馆 1 条 + 并行 2 条。
 
-| Where | How |
+| 位置 | 用法 |
 | --- | --- |
-| Wand menu | Click **并行回复：N 条** and enter a number. `1` turns it off. |
-| Slash command | `/pswipe 3` sets the count to 3. `/pswipe off` turns it off. `/pswipe` alone returns the current count (`0` = off). |
-| Extension settings | **启用** (enable), **每次生成的回复总数** (total replies, 1–10), **右滑生成新回复时也并行** (also run in parallel when swiping right), **遇到限流/网关错误自动重试一次** (retry once on rate limit or gateway errors), **多少秒没收到内容就放弃这条** (timeout in seconds, 15–600, default 90). |
+| 魔杖菜单 | 点「并行回复：N 条」，输入数字。填 `1` 即关闭。 |
+| 斜杠命令 | `/pswipe 3` 设为 3 条；`/pswipe off` 关闭；只输入 `/pswipe` 返回当前数量（`0` 表示已关闭）。 |
+| 扩展设置 | 启用；每次生成的回复总数（1–10）；右滑生成新回复时也并行；遇到限流/网关错误自动重试一次；多少秒没收到内容就放弃这条（15–600 秒，默认 90）。 |
 
-It runs on normal sends, regenerate, and swipe-right on the last reply.
+正常发送、重新生成、在最后一条回复上右滑时都会生效。
 
-**Billing:** every parallel request is a full, separately billed request. A count of 3 costs about three times as much as a normal generation.
+**计费提醒**：每条并行请求都是完整的、单独计费的请求。设为 3 条，花费约是普通生成的 3 倍。
 
-### Deleting a swipe you don't want
+### 删掉不想要的备选
 
-SillyTavern can already do this for the last message. Either use `/delswipe 2` (1-based swipe number), or open the message editor, click the trash icon, and choose **Delete Swipe**. Choosing **Delete Message** removes the whole message.
+酒馆本身就能删最后一条消息里的某个备选：输入 `/delswipe 2`（编号从 1 开始），或者点消息的编辑按钮 → 垃圾桶 → 选 **Delete Swipe**。注意选 **Delete Message** 会删掉整条消息。
 
-## Limitations
+## 限制
 
-- Group chats, Continue, Impersonate, and quiet or background generations are not handled. They generate normally.
-- Text Completion, NovelAI, KoboldAI, and other non-Chat-Completion APIs are not supported.
-- Swipes are added after SillyTavern's own reply finishes and the UI is idle, so a parallel reply that finishes early still waits for that one.
-- Tool calling is not replayed in the parallel requests.
+- 群聊、续写（Continue）、代写（Impersonate）、静默/后台生成不走并行，按普通方式生成。
+- 不支持文本补全、NovelAI、KoboldAI 等非聊天补全接口。
+- 备选要等酒馆自己那条生成完、界面空闲后才加入，所以提前完成的并行回复也要等它。
+- 并行请求不会重放工具调用（Tool Calling）。
 
-## Troubleshooting
+## 常见问题
 
-- **"Service is too busy" / 503 / 429 errors on the extra replies.** Your provider is limiting concurrent requests. Lower the count, try again later, or use a different provider.
-- **Nothing streams, even SillyTavern's own reply.** That is the provider, not this extension. Run `/pswipe off` and send a message to check. The extension gives up on stuck parallel requests after the timeout, but SillyTavern's own request has to be stopped with its stop button.
-- **No swipes were added.** Open the browser console (F12) and look for lines starting with `[并行备选]`. They explain why each request failed.
+- **多出来的回复报「Service is too busy」/ 503 / 429**：服务商在限制并发。调低数量、过会儿再试，或换个服务商。
+- **什么都不出字，连酒馆自己那条也是**：这是服务商的问题，不是扩展的问题。输入 `/pswipe off` 再发一条消息确认。扩展会在超时后放弃卡住的并行请求，但酒馆自己那条要用酒馆的停止按钮来停。
+- **一条备选都没加进来**：按 F12 打开浏览器控制台，找 `[并行备选]` 开头的日志，里面写了每条请求失败的原因。
 
-## How it works
+## 工作原理
 
-1. On `GENERATION_STARTED`, the extension notes that a native `normal`, `regenerate`, or `swipe` generation is starting.
-2. On `CHAT_COMPLETION_SETTINGS_READY`, it checks that the request belongs to that generation, then copies the final request body (registered last, after other listeners have modified it).
-3. It sends the copies to SillyTavern's own backend endpoint `/api/backends/chat-completions/generate`. Your API keys stay on the server and never touch the extension.
-4. Each response (streaming or not) is parsed and cleaned the way SillyTavern cleans a normal reply.
-5. When everything has settled and SillyTavern is idle, the results are appended to the target message's `swipes` and `swipe_info`, and the chat is saved.
+1. 在 `GENERATION_STARTED` 时，扩展记下酒馆即将开始一次原生的 `normal`、`regenerate` 或 `swipe` 生成。
+2. 在 `CHAT_COMPLETION_SETTINGS_READY` 时，确认这条请求属于那次生成，然后复制最终的请求体（监听器注册在最后，其他扩展改完之后才复制）。
+3. 把副本发到酒馆自己的后端接口 `/api/backends/chat-completions/generate`。API Key 始终留在酒馆服务端，扩展接触不到。
+4. 每条响应（流式或非流式）都按酒馆清理普通回复的方式解析和清理。
+5. 全部结束且酒馆空闲后，结果追加到目标消息的 `swipes` 和 `swipe_info`，并保存聊天。
 
-## License
+## 许可证
 
 [MIT](LICENSE)
