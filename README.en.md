@@ -19,7 +19,8 @@ Total wait time is roughly the time of the slowest request, not the sum of all o
 - **Resilient:**
   - Only SillyTavern's own reply requests are copied. Requests from other extensions or scripts (for example image prompt generators using `generateRaw`) are left alone.
   - Rate limits (429), gateway errors, and "service too busy" responses are retried once. This can be turned off.
-  - A configurable timeout gives up on any request that stops sending content, so the bar never hangs forever.
+  - Timeouts are measured against SillyTavern's own reply. While it is still generating, parallel requests are never timed out. Once it finishes, they get a configurable grace period (default 120 seconds) before being given up, so the bar never hangs forever. Gateways that buffer the whole reply and send it at once no longer get long replies killed.
+  - When a request fails, is retried, or is cancelled automatically, a notification appears right away with the reason, and the progress bar shows how many were cancelled. No need to open the console to find out.
   - If SillyTavern's own reply fails or comes back empty, the first parallel result replaces it instead of leaving a blank swipe.
   - If you switch chats or delete or change the message while requests are running, the results are discarded rather than written to the wrong place.
   - While the extension is enabled, the built-in `n` parameter is removed from requests so it can no longer cause `Bad Request` errors.
@@ -48,7 +49,9 @@ The count is the **total** number of replies per generation, **including SillyTa
 | --- | --- |
 | Wand menu | Click **并行回复：N 条** and enter a number. `1` turns it off. |
 | Slash command | `/pswipe 3` sets the count to 3. `/pswipe off` turns it off. `/pswipe` alone returns the current count (`0` = off). |
-| Extension settings | **启用** (enable), **每次生成的回复总数** (total replies, 1–10), **右滑生成新回复时也并行** (also run in parallel when swiping right), **遇到限流/网关错误自动重试一次** (retry once on rate limit or gateway errors), **多少秒没收到内容就放弃这条** (timeout in seconds, 15–600, default 90). |
+| Extension settings | **启用** (enable), **每次生成的回复总数** (total replies, 1–10), **右滑生成新回复时也并行** (also run in parallel when swiping right), **遇到限流/网关错误自动重试一次** (retry once on rate limit or gateway errors), **酒馆那条完成后，最多再等几秒** (grace period after SillyTavern's reply finishes, 10–1800 seconds, default 120), **多少秒没收到新内容就放弃（0 = 不限）** (no-content timeout, `0` = off, off by default; 15–600 seconds when on, only useful for providers that truly stream token by token). |
+
+The two timeouts are independent and have no priority. Each runs on its own clock, and whichever expires first cancels the request. Requests cancelled by a timeout are not retried.
 
 It runs on normal sends, regenerate, and swipe-right on the last reply.
 
@@ -68,7 +71,8 @@ SillyTavern can already do this for the last message. Either use `/delswipe 2` (
 ## Troubleshooting
 
 - **"Service is too busy" / 503 / 429 errors on the extra replies.** Your provider is limiting concurrent requests. Lower the count, try again later, or use a different provider.
-- **Nothing streams, even SillyTavern's own reply.** That is the provider, not this extension. Run `/pswipe off` and send a message to check. The extension gives up on stuck parallel requests after the timeout, but SillyTavern's own request has to be stopped with its stop button.
+- **Nothing streams, even SillyTavern's own reply.** That is the provider, not this extension. Run `/pswipe off` and send a message to check. The extension gives up on stuck parallel requests after the grace period, but SillyTavern's own request has to be stopped with its stop button.
+- **Parallel replies time out on long requests.** Raise the grace period. If you turned on the no-content timeout and your provider buffers the whole reply before sending it, set that timeout to `0`.
 - **No swipes were added.** Open the browser console (F12) and look for lines starting with `[并行备选]`. They explain why each request failed.
 
 ## How it works

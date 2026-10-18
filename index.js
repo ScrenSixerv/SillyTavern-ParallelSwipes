@@ -58,8 +58,10 @@ const DEFAULTS = {
     count: 3,
     onSwipe: true,
     retry: true,
-    timeoutSec: 90,
+    timeoutSec: 0,
+    graceSec: 120,
 };
+const SETTINGS_VERSION = 2;
 
 /** 酒馆即将发出的主请求（GENERATION_STARTED 记下，CHAT_COMPLETION_SETTINGS_READY 认领） */
 let pendingMain = null;
@@ -76,10 +78,18 @@ function clampCount(value) {
     return Math.min(MAX_COUNT, Math.max(1, n));
 }
 
+/** 0 = 关闭；其余限制在 15–600 秒 */
 function clampTimeout(value) {
     const n = Math.floor(Number(value));
     if (!Number.isFinite(n)) return DEFAULTS.timeoutSec;
+    if (n <= 0) return 0;
     return Math.min(600, Math.max(15, n));
+}
+
+function clampGrace(value) {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n)) return DEFAULTS.graceSec;
+    return Math.min(1800, Math.max(10, n));
 }
 
 function getSettings() {
@@ -87,11 +97,17 @@ function getSettings() {
         extension_settings[MODULE] = {};
     }
     const s = extension_settings[MODULE];
+    if (s.settingsVersion !== SETTINGS_VERSION) {
+        // 旧版默认的 90 秒"无内容超时"会误杀非真流式网关的长回复，升级时改为关闭
+        if (s.timeoutSec === 90) s.timeoutSec = 0;
+        s.settingsVersion = SETTINGS_VERSION;
+    }
     for (const [key, value] of Object.entries(DEFAULTS)) {
         if (typeof s[key] !== typeof value) s[key] = value;
     }
     s.count = clampCount(s.count);
     s.timeoutSec = clampTimeout(s.timeoutSec);
+    s.graceSec = clampGrace(s.graceSec);
     return s;
 }
 
@@ -245,6 +261,9 @@ function createSession(type, extraCount) {
         target: type === 'swipe' ? baseLast : null,
         slot: type === 'swipe' ? baseLast.swipe_id : 0,
         mainReceived: false,
+        // 酒馆那条结束（成功、失败或被停止）的时间；之后并行的几条只再等 graceSec 秒
+        mainDoneAt: 0,
+        graceDeadline: 0,
         startedAt: new Date(),
         cancelled: false,
         phase: 'running',
@@ -300,8 +319,33 @@ async function sessionLoop(session) {
 
         bindTarget(session);
 
-        const settled = session.jobs.every(job => job.status !== 'running');
-        if (!settled) {
+        const running = session.jobs.filter(job => job.status === 'running');
+
+        if (!session.mainDoneAt && (session.mainReceived || !isGenerating())) {
+            session.mainDoneAt = Date.now();
+            session.graceDeadline = session.mainDoneAt + getSettings().graceSec * 1000;
+            if (running.length) renderBar();
+        }
+        if (session.graceDeadline && running.length) {
+            if (Date.now() > session.graceDeadline) {
+                const expiring = running.filter(job => !job.graceExpired);
+                for (const job of expiring) {
+                    job.graceExpired = true;
+                    job.controller.abort();
+                }
+                if (expiring.length) {
+                    toastr.warning(
+                        `酒馆那条完成后已等待 ${getSettings().graceSec} 秒，${expiring.length} 条未完成的并行回复已自动取消。`,
+                        '并行备选',
+                        { timeOut: 8000 },
+                    );
+                }
+            } else {
+                scheduleBarRender();
+            }
+        }
+
+        if (running.length) {
             stable = 0;
             continue;
         }
@@ -349,16 +393,19 @@ function finishSession(session, outcome) {
 
     const done = session.jobs.filter(j => j.status === 'done').length;
     const failed = session.jobs.filter(j => j.status === 'failed');
-    const failText = failed.length
-        ? `\n失败 ${failed.length} 条：${[...new Set(failed.map(j => j.error))].join('；')}`
-        : '';
+    const aborted = session.jobs.filter(j => j.status === 'aborted');
+    // 已经单独弹过提示的失败不再重复列原因
+    const unnotified = failed.filter(j => !j.notified);
+    const reasons = jobs => [...new Set(jobs.map(j => j.error))].join('；');
+    const failText = unnotified.length ? `\n失败 ${unnotified.length} 条：${reasons(unnotified)}` : '';
+    const skipped = failed.length + aborted.length;
 
     switch (outcome.reason) {
         case 'applied':
             toastr.success(
-                `已加入 ${outcome.added} 条备选回复（这条消息共 ${outcome.total} 条），用左右箭头切换。${failText}`,
+                `已加入 ${outcome.added} 条备选回复（这条消息共 ${outcome.total} 条）${skipped ? `，另有 ${skipped} 条已取消` : ''}，用左右箭头切换。${failText}`,
                 '并行备选',
-                { timeOut: failed.length ? 8000 : 3500 },
+                { timeOut: skipped ? 8000 : 3500 },
             );
             break;
         case 'created':
@@ -369,8 +416,12 @@ function finishSession(session, outcome) {
             );
             break;
         case 'all_failed':
-            if (failed.length) {
-                toastr.error(`并行请求全部失败：${[...new Set(failed.map(j => j.error))].join('；')}`, '并行备选', { timeOut: 10000 });
+            if (unnotified.length) {
+                toastr.error(`并行请求全部失败：${reasons(unnotified)}`, '并行备选', { timeOut: 10000 });
+            } else if (failed.length) {
+                toastr.warning('并行回复都没有完成，已全部取消，这次只有酒馆自己那条。', '并行备选', { timeOut: 8000 });
+            } else if (aborted.length) {
+                toastr.info('已停止并行请求，这次没有加入备选回复。', '并行备选');
             }
             break;
         case 'chat_changed':
@@ -405,15 +456,20 @@ async function runJob(session, job, body) {
                 return;
             } catch (err) {
                 if (job.controller.signal.aborted) {
-                    job.status = 'aborted';
+                    markAborted(job);
                     return;
                 }
                 if (err?.retryable && attempt < maxAttempts) {
                     console.warn(LOG, `第 ${job.index + 2} 条请求失败，稍后重试：`, err);
+                    toastr.info(
+                        `第 ${job.index + 2} 条并行回复失败，正在重试一次：${err?.message || err}`,
+                        '并行备选',
+                        { timeOut: 5000 },
+                    );
                     job.chars = 0;
                     await sleep(1500 * attempt, job.controller.signal);
                     if (job.controller.signal.aborted) {
-                        job.status = 'aborted';
+                        markAborted(job);
                         return;
                     }
                     continue;
@@ -421,6 +477,12 @@ async function runJob(session, job, body) {
                 console.warn(LOG, `第 ${job.index + 2} 条请求失败：`, err);
                 job.status = 'failed';
                 job.error = err?.message || String(err);
+                job.notified = true;
+                toastr.warning(
+                    `第 ${job.index + 2} 条并行回复失败，已自动取消：${job.error}`,
+                    '并行备选',
+                    { timeOut: 8000 },
+                );
                 return;
             }
         }
@@ -429,9 +491,22 @@ async function runJob(session, job, body) {
     }
 }
 
+/** 被停止的请求：酒馆那条完成后等待超时算失败（要提示原因），用户主动停止算放弃 */
+function markAborted(job) {
+    if (job.graceExpired) {
+        job.status = 'failed';
+        job.error = `酒馆那条完成后又等了 ${getSettings().graceSec} 秒仍未完成，已放弃`;
+        job.notified = true;
+        console.warn(LOG, `第 ${job.index + 2} 条请求：${job.error}`);
+    } else {
+        job.status = 'aborted';
+    }
+}
+
 /**
- * 每次尝试单独一个 AbortController：用户停止（job.controller）会连带停止它；
- * 超过设定秒数没有收到任何内容也会停止它，并按"超时"处理，避免服务商卡住时永远等待。
+ * 每次尝试单独一个 AbortController：用户停止或等待超时（job.controller）会连带停止它；
+ * 若开启了"无内容超时"，超过设定秒数没有收到任何内容也会停止它。
+ * 超时不自动重试：长回复重来一遍大概率还是超时，还要再计一次费。
  */
 async function requestOnce(job, body) {
     const timeoutMs = getSettings().timeoutSec * 1000;
@@ -442,6 +517,7 @@ async function requestOnce(job, body) {
     let timedOut = false;
     let timer = null;
     const touch = () => {
+        if (!timeoutMs) return;
         clearTimeout(timer);
         timer = setTimeout(() => {
             timedOut = true;
@@ -476,7 +552,7 @@ async function requestOnce(job, body) {
     } catch (err) {
         if (timedOut && !job.controller.signal.aborted) {
             const sec = Math.round(timeoutMs / 1000);
-            throw Object.assign(new Error(`超过 ${sec} 秒没有收到内容（服务商可能繁忙或卡住）`), { retryable: true });
+            throw Object.assign(new Error(`超过 ${sec} 秒没有收到内容（服务商可能繁忙或卡住）`), { retryable: false });
         }
         throw err;
     } finally {
@@ -665,25 +741,33 @@ function renderBar() {
     let failed = 0;
     let chars = 0;
     let waiting = false;
+    let graceLeft = null;
     for (const session of sessions) {
+        let sessionRunning = 0;
         for (const job of session.jobs) {
             if (job.status === 'running') {
                 running++;
+                sessionRunning++;
                 chars += job.chars;
             } else if (job.status === 'done') {
                 done++;
-            } else if (job.status === 'failed') {
+            } else if (job.status === 'failed' || job.status === 'aborted') {
                 failed++;
             }
         }
         if (session.phase === 'waiting') waiting = true;
+        if (sessionRunning && session.graceDeadline) {
+            const left = Math.max(0, Math.ceil((session.graceDeadline - Date.now()) / 1000));
+            graceLeft = graceLeft === null ? left : Math.min(graceLeft, left);
+        }
     }
 
     let text;
     if (running) {
-        text = `并行备选生成中：完成 ${done} · 进行中 ${running}${failed ? ` · 失败 ${failed}` : ''}${chars ? `（已收到约 ${chars} 字）` : ''}`;
+        text = `并行备选生成中：完成 ${done} · 进行中 ${running}${failed ? ` · 已取消 ${failed}` : ''}${chars ? `（已收到约 ${chars} 字）` : ''}`;
+        if (graceLeft !== null) text += ` · 酒馆那条已完成，最多再等 ${graceLeft} 秒`;
     } else if (waiting) {
-        text = `并行备选已就绪 ${done} 条，等酒馆这条完成后加入…`;
+        text = `并行备选已就绪 ${done} 条${failed ? `（已取消 ${failed} 条）` : ''}，等酒馆这条完成后加入…`;
     } else {
         text = '并行备选准备中…';
     }
@@ -715,6 +799,7 @@ function syncSettingsUI() {
     $('#pswipe_on_swipe').prop('checked', s.onSwipe);
     $('#pswipe_retry').prop('checked', s.retry);
     $('#pswipe_timeout').val(s.timeoutSec);
+    $('#pswipe_grace').val(s.graceSec);
     $('#pswipe_wand_label').text(s.enabled ? `并行回复：${s.count} 条` : '并行回复：已关闭');
 }
 
@@ -745,11 +830,17 @@ function addSettingsPanel() {
                         <span>遇到限流/网关错误自动重试一次</span>
                     </label>
                     <div class="pswipe_row">
-                        <label for="pswipe_timeout">多少秒没收到内容就放弃这条</label>
-                        <input type="number" id="pswipe_timeout" class="text_pole" min="15" max="600" step="5">
+                        <label for="pswipe_grace">酒馆那条完成后，最多再等几秒</label>
+                        <input type="number" id="pswipe_grace" class="text_pole" min="10" max="1800" step="10">
+                    </div>
+                    <div class="pswipe_row">
+                        <label for="pswipe_timeout">多少秒没收到新内容就放弃（0 = 不限）</label>
+                        <input type="number" id="pswipe_timeout" class="text_pole" min="0" max="600" step="5">
                     </div>
                     <small>
                         回复总数包含酒馆自己那条，例如填 3 = 酒馆 1 条 + 并行 2 条。每条都单独计费。<br>
+                        酒馆那条还在生成时，并行的几条不会被判超时；酒馆那条结束后，没完成的再等上面设的秒数，超过就放弃。<br>
+                        「没收到新内容就放弃」只适合真正逐字输出的服务商；如果回复是最后一次性整段出现的，请保持 0。<br>
                         也可以在魔杖菜单里点「并行回复」，或输入 <code>/pswipe 3</code>、<code>/pswipe off</code> 随时调整。<br>
                         只对聊天补全接口的单角色聊天生效；启用后酒馆自带的「每次生成多个备选」(n) 不再随请求发送。
                     </small>
@@ -772,6 +863,11 @@ function addSettingsPanel() {
     });
     $('#pswipe_timeout').on('change', function () {
         getSettings().timeoutSec = clampTimeout($(this).val());
+        saveSettingsDebounced();
+        syncSettingsUI();
+    });
+    $('#pswipe_grace').on('change', function () {
+        getSettings().graceSec = clampGrace($(this).val());
         saveSettingsDebounced();
         syncSettingsUI();
     });
